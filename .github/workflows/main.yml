@@ -51,15 +51,13 @@ jobs:
         echo "CHUNK_COUNT=${CHUNK_COUNT}" >> $GITHUB_ENV
         rm "${{ env.FILE_NAME }}"
 
-    - name: Create self-cleaning reassemblers
+    - name: Create cross-platform reassemblers
       run: |
         cd download
         
-        # Bash script (Linux/macOS/WSL/Git Bash) - auto cleans chunks
+        # Bash script (Linux/macOS/WSL/Git Bash)
         cat > reassemble.sh << 'EOF'
         #!/bin/bash
-        # Auto-reassembler that cleans up chunks after success
-        
         echo "🔧 Reassembling: $FILE_NAME"
         
         # Combine chunks
@@ -73,14 +71,13 @@ jobs:
                 echo ""
                 echo "🧹 Cleaning up chunks..."
                 rm "$FILE_NAME".part.*
-                echo "✅ Chunks deleted. Only the final file remains."
+                echo "✅ Done! Only the final file remains."
             else
                 rm "$FILE_NAME"
                 echo "❌ Checksum verification failed!"
                 exit 1
             fi
         elif command -v shasum >/dev/null 2>&1; then
-            # macOS
             expected=$(cut -d' ' -f1 < "$FILE_NAME.sha256")
             actual=$(shasum -a 256 "$FILE_NAME" | cut -d' ' -f1)
             if [ "$actual" = "$expected" ]; then
@@ -89,7 +86,7 @@ jobs:
                 echo ""
                 echo "🧹 Cleaning up chunks..."
                 rm "$FILE_NAME".part.*
-                echo "✅ Chunks deleted. Only the final file remains."
+                echo "✅ Done! Only the final file remains."
             else
                 rm "$FILE_NAME"
                 echo "❌ Checksum verification failed!"
@@ -101,45 +98,59 @@ jobs:
             echo ""
             echo "🧹 Cleaning up chunks..."
             rm "$FILE_NAME".part.*
-            echo "✅ Chunks deleted. Only the final file remains."
+            echo "✅ Done! Only the final file remains."
         fi
         EOF
         
-        # Windows Batch file - auto cleans chunks
+        # Windows Batch file (improved version)
         cat > reassemble.bat << 'EOF'
         @echo off
+        setlocal enabledelayedexpansion
+
         echo 🔧 Reassembling: %FILE_NAME%
-        
+
         :: Combine chunks
-        copy /b %FILE_NAME%.part.* %FILE_NAME% > nul
-        
-        if not exist %FILE_NAME% (
+        copy /b "%FILE_NAME%.part.*" "%FILE_NAME%" > nul 2>&1
+
+        if not exist "%FILE_NAME%" (
             echo ❌ Failed to reassemble file
             exit /b 1
         )
-        
+
         :: Verify checksum
         echo Verifying integrity...
-        certutil -hashfile %FILE_NAME% SHA256 | findstr /v "certutil" | findstr /v "SHA256" > temp_hash.txt
-        
-        set /p actual=<temp_hash.txt
-        set /p expected=<%FILE_NAME%.sha256
-        set expected=%expected: =%
-        
-        if "%actual%"=="%expected%" (
+
+        :: Extract hash from certutil output (line 2, remove spaces)
+        for /f "skip=1 tokens=* delims=" %%h in ('certutil -hashfile "%FILE_NAME%" SHA256') do (
+            set "actual=%%h"
+            goto :got_actual
+        )
+        :got_actual
+        set "actual=%actual: =%"
+
+        :: Read expected hash from file
+        set /p expected=<"%FILE_NAME%.sha256"
+        for /f "tokens=1" %%a in ("%expected%") do set "expected=%%a"
+        set "expected=%expected: =%"
+
+        :: Compare (case-insensitive)
+        if /i "%actual%"=="%expected%" (
             echo ✅ Success! File: %FILE_NAME%
             for %%A in ("%FILE_NAME%") do echo Size: %%~zA bytes
             echo.
             echo 🧹 Cleaning up chunks...
-            del %FILE_NAME%.part.*
-            del temp_hash.txt
+            del "%FILE_NAME%.part.*" 2>nul
+            del "%FILE_NAME%.sha256" 2>nul
             echo ✅ Chunks deleted. Only the final file remains.
         ) else (
             echo ❌ Checksum verification failed!
-            del %FILE_NAME%
-            del temp_hash.txt
+            echo Expected: %expected%
+            echo Actual:   %actual%
+            del "%FILE_NAME%" 2>nul
             exit /b 1
         )
+
+        endlocal
         EOF
         
         # Make bash script executable
@@ -205,7 +216,6 @@ jobs:
         echo ""
         echo "Then run:"
         echo "  🐧 Linux/Mac: bash reassemble.sh"
-        echo "  🪟 Windows: reassemble.bat"
+        echo "  🪟 Windows:   reassemble.bat"
         echo ""
-        echo "The script will automatically clean up chunks after success!"
         echo "=========================================="
