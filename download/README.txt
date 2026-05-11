@@ -1,13 +1,21 @@
 ========================================
-FILE READY FOR DOWNLOAD
+FILE: tele-mirror-win-x64.zip
+SIZE: 141 MB
+CHUNKS: 2 files
 ========================================
 
-File: tele-mirror-win-x64.zip
-Size: 141 MB
-Split into: 2 chunks (95MB each)
+HOW TO GET YOUR FILE:
 
-TO REASSEMBLE:
-1. Run: bash REASSEMBLE.sh
+🐧 Linux / macOS / WSL / Git Bash:
+    bash reassemble.sh
 
-The reassembled file will appear in this folder.
+🪟 Windows (Command Prompt):
+    reassemble.bat
+
+WHAT IT DOES:
+1. Reassembles the file from chunks
+2. Verifies integrity with SHA256
+3. Automatically deletes chunks
+4. Leaves only the final file
+
 ========================================
