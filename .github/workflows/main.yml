@@ -1,83 +1,168 @@
-name: Expose Docker Image via ngrok
+name: Download and Split File
 
 on:
   workflow_dispatch:
     inputs:
-      docker_image:
-        description: 'Docker image to pull and expose'
+      file_url:
+        description: 'File URL to download'
         required: true
-        default: 'alpine:latest'
+      filename:
+        description: 'Output filename (optional)'
+        required: false
 
 jobs:
-  expose-image:
+  download-and-split:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     
     steps:
-    - name: Install ngrok via official guide
-      run: |
-        curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
-          | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null \
-          && echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" \
-          | sudo tee /etc/apt/sources.list.d/ngrok.list \
-          && sudo apt update \
-          && sudo apt install ngrok
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-    - name: Authenticate ngrok
-      run: ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
-
-    - name: Pull Docker image
+    - name: Remove old download folder from repo
       run: |
-        docker pull ${{ inputs.docker_image }}
-        # Create safe filename
-        IMAGE_NAME=$(echo ${{ inputs.docker_image }} | tr '/:' '__')
-        echo "IMAGE_NAME=${IMAGE_NAME}" >> $GITHUB_ENV
+        # Remove existing download folder from repo
+        rm -rf download
+        git rm -rf download 2>/dev/null || true
+        mkdir -p download
+        echo "✅ Removed old download folder from repo"
 
-    - name: Save Docker image to file
+    - name: Download file
       run: |
-        docker save ${{ inputs.docker_image }} -o ${IMAGE_NAME}.tar
-        gzip ${IMAGE_NAME}.tar
-        echo "FILE=${IMAGE_NAME}.tar.gz" >> $GITHUB_ENV
-        echo "File size: $(du -h ${IMAGE_NAME}.tar.gz | cut -f1)"
-
-    - name: Start HTTP server
-      run: |
-        python3 -m http.server 8000 &
-        sleep 2
-
-    - name: Start ngrok tunnel
-      run: |
-        ngrok http 8000 --log=stdout > ngrok.log 2>&1 &
-        sleep 5
-        # Get public URL
-        NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
-        echo "NGROK_URL=${NGROK_URL}" >> $GITHUB_ENV
-        echo "DOWNLOAD_URL=${NGROK_URL}/${FILE}" >> $GITHUB_ENV
-
-    - name: Show download link and keep alive
-      run: |
-        echo "=========================================="
-        echo "✅ Docker image ready for download"
-        echo "=========================================="
-        echo "Image: ${{ inputs.docker_image }}"
-        echo "File: ${FILE}"
-        echo ""
-        echo "📥 DOWNLOAD LINK:"
-        echo "${DOWNLOAD_URL}"
-        echo ""
-        echo "🔗 ngrok URL: ${NGROK_URL}"
-        echo "=========================================="
-        echo ""
-        echo "💡 To download: curl -O ${DOWNLOAD_URL}"
-        echo ""
-        echo "⏱️  Link active until workflow is canceled"
-        echo "=========================================="
-        echo ""
-        echo "Press Ctrl+C or cancel workflow from GitHub UI to stop"
-        echo ""
+        cd download
         
-        # Keep workflow running
-        while true; do
-          sleep 60
-          # Show link every 5 minutes as reminder
-          echo "[$(date '+%H:%M:%S')] Download still available at: ${DOWNLOAD_URL}"
-        done
+        # Download the file
+        curl -L -J -O --fail --progress-bar "${{ inputs.file_url }}"
+        
+        # Get downloaded filename
+        ORIGINAL_FILE=$(ls -1 | head -n 1)
+        
+        # Rename if custom name provided
+        if [ -n "${{ inputs.filename }}" ]; then
+          mv "$ORIGINAL_FILE" "${{ inputs.filename }}"
+          ORIGINAL_FILE="${{ inputs.filename }}"
+        fi
+        
+        echo "FILE_NAME=${ORIGINAL_FILE}" >> $GITHUB_ENV
+        FILE_SIZE=$(stat -c%s "$ORIGINAL_FILE")
+        echo "FILE_SIZE_MB=$((FILE_SIZE / 1024 / 1024))" >> $GITHUB_ENV
+        
+        echo "✅ Downloaded: ${ORIGINAL_FILE} ($((FILE_SIZE / 1024 / 1024)) MB)"
+
+    - name: Split into 95MB chunks
+      run: |
+        cd download
+        
+        # Split into 95MB chunks (safe under 100MB limit)
+        split -b 95M -d -a 3 "${{ env.FILE_NAME }}" "${{ env.FILE_NAME }}.part."
+        
+        # Create checksum
+        sha256sum "${{ env.FILE_NAME }}" > "${{ env.FILE_NAME }}.sha256"
+        
+        # Count chunks
+        CHUNK_COUNT=$(ls -1 "${{ env.FILE_NAME }}.part."* 2>/dev/null | wc -l)
+        echo "CHUNK_COUNT=${CHUNK_COUNT}" >> $GITHUB_ENV
+        
+        # Create reassemble script
+        cat > REASSEMBLE.sh << 'EOF'
+        #!/bin/bash
+        # Reassemble file from chunks
+        
+        echo "🔧 Reassembling: $FILE_NAME"
+        
+        # Combine all chunks
+        cat $FILE_NAME.part.* > $FILE_NAME.reassembled
+        
+        # Verify checksum
+        if sha256sum -c $FILE_NAME.sha256 --strict 2>/dev/null; then
+            mv $FILE_NAME.reassembled $FILE_NAME
+            echo "✅ Success! File reassembled: $FILE_NAME"
+            echo "Size: $(du -h $FILE_NAME | cut -f1)"
+            echo ""
+            echo "You can now delete the .part.* files to save space:"
+            echo "rm $FILE_NAME.part.*"
+        else
+            rm $FILE_NAME.reassembled
+            echo "❌ Checksum failed! File may be corrupted."
+            exit 1
+        fi
+        EOF
+        
+        chmod +x REASSEMBLE.sh
+        sed -i "s/\$FILE_NAME/${{ env.FILE_NAME }}/g" REASSEMBLE.sh
+        
+        # Create instruction file
+        cat > README.txt << EOF
+        ========================================
+        FILE READY FOR DOWNLOAD
+        ========================================
+        
+        File: ${{ env.FILE_NAME }}
+        Size: ${{ env.FILE_SIZE_MB }} MB
+        Split into: ${CHUNK_COUNT} chunks (95MB each)
+        
+        TO REASSEMBLE:
+        1. Run: bash REASSEMBLE.sh
+        
+        The reassembled file will appear in this folder.
+        ========================================
+        EOF
+
+    - name: List created chunks
+      run: |
+        cd download
+        echo ""
+        echo "📦 Created chunks in repo:"
+        ls -lh ${{ env.FILE_NAME }}.part.* | awk '{print "  " $9 " (" $5 ")"}'
+        echo ""
+        echo "Total chunks: ${{ env.CHUNK_COUNT }}"
+
+    - name: Commit and push to repo
+      run: |
+        git config user.name "GitHub Action"
+        git config user.email "action@github.com"
+        
+        # Add the new download folder
+        git add download/
+        
+        # Commit
+        TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+        git commit -m "Download: ${{ env.FILE_NAME }} (${{ env.FILE_SIZE_MB }}MB split into ${{ env.CHUNK_COUNT }} chunks)"
+        
+        # Push to repo
+        git push origin main
+
+    - name: Show download instructions
+      run: |
+        echo "=========================================="
+        echo "✅ FILE SPLIT AND SAVED TO REPO"
+        echo "=========================================="
+        echo ""
+        echo "📁 Repo download folder:"
+        echo "   https://github.com/${{ github.repository }}/tree/main/download"
+        echo ""
+        echo "📥 HOW TO DOWNLOAD (ZIP METHOD):"
+        echo "=========================================="
+        echo ""
+        echo "Option 1 - Download entire repo as ZIP:"
+        echo "   https://github.com/${{ github.repository }}/archive/refs/heads/main.zip"
+        echo ""
+        echo "Option 2 - Download just the download folder as ZIP:"
+        echo "   https://github.com/${{ github.repository }}/archive/refs/heads/main.zip download/"
+        echo ""
+        echo "AFTER DOWNLOADING:"
+        echo "   1. Extract the ZIP"
+        echo "   2. cd into the download folder"
+        echo "   3. Run: bash REASSEMBLE.sh"
+        echo ""
+        echo "=========================================="
+        echo "📝 ONE-LINE COMMAND ON TARGET MACHINE:"
+        echo "=========================================="
+        echo ""
+        echo "curl -L -o repo.zip https://github.com/${{ github.repository }}/archive/refs/heads/main.zip && \\"
+        echo "unzip repo.zip && \\"
+        echo "cd $(echo ${{ github.repository }} | cut -d'/' -f2)-main/download && \\"
+        echo "bash REASSEMBLE.sh"
+        echo ""
+        echo "=========================================="
