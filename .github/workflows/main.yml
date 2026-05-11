@@ -1,0 +1,83 @@
+name: Expose Docker Image via ngrok
+
+on:
+  workflow_dispatch:
+    inputs:
+      docker_image:
+        description: 'Docker image to pull and expose'
+        required: true
+        default: 'alpine:latest'
+
+jobs:
+  expose-image:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Install ngrok via official guide
+      run: |
+        curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
+          | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null \
+          && echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" \
+          | sudo tee /etc/apt/sources.list.d/ngrok.list \
+          && sudo apt update \
+          && sudo apt install ngrok
+
+    - name: Authenticate ngrok
+      run: ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+
+    - name: Pull Docker image
+      run: |
+        docker pull ${{ inputs.docker_image }}
+        # Create safe filename
+        IMAGE_NAME=$(echo ${{ inputs.docker_image }} | tr '/:' '__')
+        echo "IMAGE_NAME=${IMAGE_NAME}" >> $GITHUB_ENV
+
+    - name: Save Docker image to file
+      run: |
+        docker save ${{ inputs.docker_image }} -o ${IMAGE_NAME}.tar
+        gzip ${IMAGE_NAME}.tar
+        echo "FILE=${IMAGE_NAME}.tar.gz" >> $GITHUB_ENV
+        echo "File size: $(du -h ${IMAGE_NAME}.tar.gz | cut -f1)"
+
+    - name: Start HTTP server
+      run: |
+        python3 -m http.server 8000 &
+        sleep 2
+
+    - name: Start ngrok tunnel
+      run: |
+        ngrok http 8000 --log=stdout > ngrok.log 2>&1 &
+        sleep 5
+        # Get public URL
+        NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+        echo "NGROK_URL=${NGROK_URL}" >> $GITHUB_ENV
+        echo "DOWNLOAD_URL=${NGROK_URL}/${FILE}" >> $GITHUB_ENV
+
+    - name: Show download link and keep alive
+      run: |
+        echo "=========================================="
+        echo "✅ Docker image ready for download"
+        echo "=========================================="
+        echo "Image: ${{ inputs.docker_image }}"
+        echo "File: ${FILE}"
+        echo ""
+        echo "📥 DOWNLOAD LINK:"
+        echo "${DOWNLOAD_URL}"
+        echo ""
+        echo "🔗 ngrok URL: ${NGROK_URL}"
+        echo "=========================================="
+        echo ""
+        echo "💡 To download: curl -O ${DOWNLOAD_URL}"
+        echo ""
+        echo "⏱️  Link active until workflow is canceled"
+        echo "=========================================="
+        echo ""
+        echo "Press Ctrl+C or cancel workflow from GitHub UI to stop"
+        echo ""
+        
+        # Keep workflow running
+        while true; do
+          sleep 60
+          # Show link every 5 minutes as reminder
+          echo "[$(date '+%H:%M:%S')] Download still available at: ${DOWNLOAD_URL}"
+        done
