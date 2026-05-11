@@ -1,6 +1,4 @@
 #!/bin/bash
-# Auto-reassembler that cleans up chunks after success
-
 echo "🔧 Reassembling: tele-mirror-win-x64.zip"
 
 # Combine chunks
@@ -14,14 +12,13 @@ if command -v sha256sum >/dev/null 2>&1; then
         echo ""
         echo "🧹 Cleaning up chunks..."
         rm "tele-mirror-win-x64.zip".part.*
-        echo "✅ Chunks deleted. Only the final file remains."
+        echo "✅ Done! Only the final file remains."
     else
         rm "tele-mirror-win-x64.zip"
         echo "❌ Checksum verification failed!"
         exit 1
     fi
 elif command -v shasum >/dev/null 2>&1; then
-    # macOS
     expected=$(cut -d' ' -f1 < "tele-mirror-win-x64.zip.sha256")
     actual=$(shasum -a 256 "tele-mirror-win-x64.zip" | cut -d' ' -f1)
     if [ "$actual" = "$expected" ]; then
@@ -30,7 +27,7 @@ elif command -v shasum >/dev/null 2>&1; then
         echo ""
         echo "🧹 Cleaning up chunks..."
         rm "tele-mirror-win-x64.zip".part.*
-        echo "✅ Chunks deleted. Only the final file remains."
+        echo "✅ Done! Only the final file remains."
     else
         rm "tele-mirror-win-x64.zip"
         echo "❌ Checksum verification failed!"
@@ -42,5 +39,5 @@ else
     echo ""
     echo "🧹 Cleaning up chunks..."
     rm "tele-mirror-win-x64.zip".part.*
-    echo "✅ Chunks deleted. Only the final file remains."
+    echo "✅ Done! Only the final file remains."
 fi
