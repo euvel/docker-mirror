@@ -22,7 +22,6 @@ jobs:
 
     - name: Remove old download folder from repo
       run: |
-        # Remove existing download folder from repo
         rm -rf download
         git rm -rf download 2>/dev/null || true
         mkdir -p download
@@ -50,19 +49,23 @@ jobs:
         
         echo "✅ Downloaded: ${ORIGINAL_FILE} ($((FILE_SIZE / 1024 / 1024)) MB)"
 
-    - name: Split into 95MB chunks
+    - name: Split into 95MB chunks and remove original
       run: |
         cd download
         
-        # Split into 95MB chunks (safe under 100MB limit)
+        # Split into 95MB chunks
         split -b 95M -d -a 3 "${{ env.FILE_NAME }}" "${{ env.FILE_NAME }}.part."
         
-        # Create checksum
+        # Create checksum from the original file
         sha256sum "${{ env.FILE_NAME }}" > "${{ env.FILE_NAME }}.sha256"
         
         # Count chunks
         CHUNK_COUNT=$(ls -1 "${{ env.FILE_NAME }}.part."* 2>/dev/null | wc -l)
         echo "CHUNK_COUNT=${CHUNK_COUNT}" >> $GITHUB_ENV
+        
+        # IMPORTANT: Delete the original large file
+        rm "${{ env.FILE_NAME }}"
+        echo "✅ Removed original large file, keeping only chunks"
         
         # Create reassemble script
         cat > REASSEMBLE.sh << 'EOF'
@@ -72,18 +75,17 @@ jobs:
         echo "🔧 Reassembling: $FILE_NAME"
         
         # Combine all chunks
-        cat $FILE_NAME.part.* > $FILE_NAME.reassembled
+        cat $FILE_NAME.part.* > $FILE_NAME
         
         # Verify checksum
         if sha256sum -c $FILE_NAME.sha256 --strict 2>/dev/null; then
-            mv $FILE_NAME.reassembled $FILE_NAME
             echo "✅ Success! File reassembled: $FILE_NAME"
             echo "Size: $(du -h $FILE_NAME | cut -f1)"
             echo ""
             echo "You can now delete the .part.* files to save space:"
             echo "rm $FILE_NAME.part.*"
         else
-            rm $FILE_NAME.reassembled
+            rm $FILE_NAME
             echo "❌ Checksum failed! File may be corrupted."
             exit 1
         fi
@@ -117,13 +119,14 @@ jobs:
         ls -lh ${{ env.FILE_NAME }}.part.* | awk '{print "  " $9 " (" $5 ")"}'
         echo ""
         echo "Total chunks: ${{ env.CHUNK_COUNT }}"
+        echo "Original file removed to respect GitHub limits"
 
     - name: Commit and push to repo
       run: |
         git config user.name "GitHub Action"
         git config user.email "action@github.com"
         
-        # Add the new download folder
+        # Add only the download folder (chunks + scripts)
         git add download/
         
         # Commit
@@ -145,11 +148,8 @@ jobs:
         echo "📥 HOW TO DOWNLOAD (ZIP METHOD):"
         echo "=========================================="
         echo ""
-        echo "Option 1 - Download entire repo as ZIP:"
+        echo "Download entire repo as ZIP:"
         echo "   https://github.com/${{ github.repository }}/archive/refs/heads/main.zip"
-        echo ""
-        echo "Option 2 - Download just the download folder as ZIP:"
-        echo "   https://github.com/${{ github.repository }}/archive/refs/heads/main.zip download/"
         echo ""
         echo "AFTER DOWNLOADING:"
         echo "   1. Extract the ZIP"
